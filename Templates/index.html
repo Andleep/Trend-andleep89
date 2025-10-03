@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ar">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>TradeBot — Simulation</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial@3.0.0/dist/chartjs-chart-financial.min.js"></script>
+  <style>
+    body{font-family:Tahoma, Arial; direction:rtl; padding:12px; background:#071022; color:#e6eef8}
+    .card{background:#0f1724; padding:12px; border-radius:10px}
+    select, button, input{padding:6px 8px; border-radius:6px; background:#071025; color:#e6eef8; border:1px solid rgba(255,255,255,0.03)}
+    table{width:100%; border-collapse:collapse; margin-top:10px}
+    th,td{padding:6px;border-bottom:1px solid rgba(255,255,255,0.05); text-align:center}
+    .green{color:#7cf3a6} .red{color:#ff9b9b}
+  </style>
+</head>
+<body>
+  <h2>TradeBot — Simulation (ذكي)</h2>
+  <div class="card">
+    <label>الزوج:
+      <select id="symbolSelect"></select>
+    </label>
+    <label>المدة:
+      <select id="monthsSelect"><option value="1">شهر</option><option value="6">6 أشهر</option><option value="0">CSV مرفوع</option></select>
+    </label>
+    <label>الفريم:
+      <select id="intervalSelect"><option value="1m">1m</option><option value="5m">5m</option><option value="1h">1h</option></select>
+    </label>
+    <button id="uploadCsv">رفع CSV</button>
+    <input id="csvFile" type="file" style="display:none" accept=".csv"/>
+    <button id="runBtn">تشغيل المحاكاة</button>
+    <a id="download" href="/download_trades" style="margin-left:12px;color:#8cd4ff">تحميل سجل الصفقات</a>
+  </div>
+
+  <div class="card" style="margin-top:12px">
+    <div id="stats">لم تُجر المحاكاة بعد.</div>
+    <table id="tradesTable">
+      <thead><tr><th>الوقت</th><th>المدخل</th><th>الخروج</th><th>الربح $</th><th>الرصيد بعد</th><th>السبب</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
