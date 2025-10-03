@@ -1,270 +1,291 @@
 # main.py
-import os
-import time
-import threading
-import csv
-from datetime import datetime
-from collections import deque
+# TradeBot Smart (simulation, no pandas)
+# Entry point: main:app
+import os, time, math, csv, requests
+from datetime import datetime, timedelta
+from flask import Flask, render_template, request, jsonify, send_file
 
-import requests
-import pandas as pd
-import numpy as np
-from flask import Flask, jsonify, send_file
+app = Flask(__name__, template_folder="templates", static_folder="static")
 
-# --- CONFIG (يمكن تغييرها عبر متغيرات البيئة في Render dashboard) ---
+# ------- CONFIG (يمكن التحكم بها عن طريق متغيرات البيئة) -------
 SYMBOLS = os.getenv("SYMBOLS", "ETHUSDT,BTCUSDT,BNBUSDT,SOLUSDT,ADAUSDT").split(",")
-POLL_SECONDS = int(os.getenv("POLL_SECONDS", "60"))   # فريم دقيقة => poll كل 60s
-EMA_SHORT = int(os.getenv("EMA_SHORT", "20"))
-EMA_LONG = int(os.getenv("EMA_LONG", "50"))
+INITIAL_BALANCE = float(os.getenv("INITIAL_BALANCE", "10.0"))
+EMA_FAST = int(os.getenv("EMA_FAST", "8"))
+EMA_SLOW = int(os.getenv("EMA_SLOW", "21"))
 RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
-VOLUME_MULTIPLIER = float(os.getenv("VOLUME_MULTIPLIER", "1.2"))  # حجم > avg_volume * multiplier
-STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", "0.01"))  # 1% stop loss
-TRADE_LOG = os.getenv("TRADE_LOG", "trades.csv")
-INITIAL_BALANCE = float(os.getenv("INITIAL_BALANCE", "10.0"))  # رصيد وهمي ابتدائي
-KL_LIMIT = int(os.getenv("KL_LIMIT", "200"))
+VOLUME_MULTIPLIER = float(os.getenv("VOLUME_MULTIPLIER", "1.0"))
+STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", "0.01"))
+RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.01"))   # نخاطر 1% من الرصيد كحد افتراضي
+POSITION_SIZE_PCT = float(os.getenv("POSITION_SIZE_PCT", "0.05"))  # الحد الأقصى لقيمة المركز = 5% من الرصيد
+MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "0.5"))     # لا نفتح مركز أكبر من 50% من الرصيد
+KL_LIMIT = int(os.getenv("KL_LIMIT", "1000"))
+BINANCE_KLINES = os.getenv("BINANCE_KLINES", "https://api.binance.com/api/v3/klines")
 
-# Endpoint for public klines
-BINANCE_KLINES = "https://api.binance.com/api/v3/klines"
+TRADE_LOG = "trades.csv"
+DEBUG_LOG = "bot_debug.log"
 
-# --- Global state ---
-balance_lock = threading.Lock()
-balance = INITIAL_BALANCE
-current_trade = None  # dict with keys: symbol, entry_price, qty, stop_price, entry_time
-trades = []  # list of trade dicts (history); also append to CSV
-stats = {"trades": 0, "wins": 0, "losses": 0, "profit_usd": 0.0}
-
-app = Flask(__name__)
-
-# --- Utilities: fetch klines and indicators ---
-def fetch_klines(symbol, interval="1m", limit=KL_LIMIT):
+# ------- Utilities: fetch klines (public endpoint) -------
+def fetch_klines_page(symbol, interval="1m", limit=1000, startTime=None):
     params = {"symbol": symbol, "interval": interval, "limit": limit}
-    r = requests.get(BINANCE_KLINES, params=params, timeout=10)
+    if startTime is not None:
+        params["startTime"] = int(startTime)
+    headers = {"User-Agent": "TradeBot/1.0"}
+    r = requests.get(BINANCE_KLINES, params=params, timeout=20, headers=headers)
     r.raise_for_status()
     data = r.json()
-    df = pd.DataFrame(data, columns=[
-        "open_time","open","high","low","close","volume","close_time","qav","count","taker_base","taker_quote","ignore"
-    ])
-    df["close"] = df["close"].astype(float)
-    df["open"] = df["open"].astype(float)
-    df["high"] = df["high"].astype(float)
-    df["low"] = df["low"].astype(float)
-    df["volume"] = df["volume"].astype(float)
-    return df
+    out = []
+    for k in data:
+        out.append({"time": int(k[0]), "open": float(k[1]), "high": float(k[2]), "low": float(k[3]), "close": float(k[4]), "volume": float(k[5])})
+    return out
 
-def compute_ema(series, span):
-    return series.ewm(span=span, adjust=False).mean()
+# ------- Basic indicators (pure python) -------
+def ema_list(values, span):
+    if not values: return []
+    alpha = 2.0/(span+1)
+    out = [values[0]]
+    for v in values[1:]:
+        out.append((v - out[-1]) * alpha + out[-1])
+    return out
 
-def compute_rsi(series, period=14):
-    # RSI standard
-    delta = series.diff()
-    up = delta.clip(lower=0)
-    down = -1 * delta.clip(upper=0)
-    ma_up = up.ewm(alpha=1/period, adjust=False).mean()
-    ma_down = down.ewm(alpha=1/period, adjust=False).mean()
-    rs = ma_up / (ma_down + 1e-12)
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+def sma_list(values, period):
+    out=[]; s=0.0
+    for i,v in enumerate(values):
+        s += v
+        if i >= period:
+            s -= values[i-period]
+            out.append(s/period)
+        elif i==period-1:
+            out.append(s/period)
+    return out
 
-# --- Trade logging ---
-def append_trade_csv(tr):
-    header = ["time","symbol","side","entry","exit","profit_usd","balance_after","reason"]
-    exists = False
-    try:
-        exists = open(TRADE_LOG, "r")
-        exists.close()
-        exists = True
-    except Exception:
-        exists = False
-    with open(TRADE_LOG, "a", newline="") as f:
-        writer = csv.writer(f)
-        if not exists:
-            writer.writerow(header)
-        writer.writerow([
-            tr["time"], tr["symbol"], tr["side"], f"{tr['entry']:.8f}",
-            f"{tr['exit']:.8f}", f"{tr['profit']:.8f}", f"{tr['balance_after']:.8f}", tr["reason"]
-        ])
+def rsi_list(values, period=14):
+    n=len(values)
+    if n < period+1: return [50.0]*n
+    deltas = [values[i]-values[i-1] for i in range(1,n)]
+    ups = [d if d>0 else 0 for d in deltas]
+    downs = [-d if d<0 else 0 for d in deltas]
+    up_avg = sum(ups[:period]) / period
+    down_avg = sum(downs[:period]) / period if sum(downs[:period])!=0 else 1e-9
+    out=[50.0]*(period+1)
+    for u,d in zip(ups[period:], downs[period:]):
+        up_avg = (up_avg*(period-1) + u)/period
+        down_avg = (down_avg*(period-1) + d)/period
+        rs = up_avg/(down_avg+1e-12)
+        out.append(100 - (100/(1+rs)))
+    if len(out)<n:
+        out = [out[0]]*(n - len(out)) + out
+    return out
 
-# --- Enter / Exit simulation (virtual wallet) ---
-def enter_trade(symbol, entry_price):
-    global current_trade, balance
-    with balance_lock:
-        if current_trade is not None:
-            return False
-        qty = balance / entry_price  # use full balance spot
-        stop_price = entry_price * (1 - STOP_LOSS_PCT)
-        current_trade = {
-            "symbol": symbol,
-            "entry_price": entry_price,
-            "qty": qty,
-            "stop_price": stop_price,
-            "entry_time": datetime.utcnow().isoformat(),
-            "side": "LONG"
-        }
-        print(f"[ENTER] {symbol} @ {entry_price:.6f} qty={qty:.8f} bal={balance:.8f}")
-        return True
+def atr_list(highs,lows,closes,period=14):
+    n=len(closes)
+    if n<2: return [0.0]*n
+    trs=[]
+    for i in range(1,n):
+        tr = max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
+        trs.append(tr)
+    if len(trs) < period:
+        avg = sum(trs)/len(trs) if trs else 0.0
+        return [avg]*n
+    sma_tr = sma_list(trs, period)
+    return [sma_tr[0]]*period + sma_tr
 
-def exit_trade(exit_price, reason="X"):
-    global current_trade, balance, stats, trades
-    with balance_lock:
-        if current_trade is None:
-            return False
-        proceeds = current_trade["qty"] * exit_price
-        cost = current_trade["qty"] * current_trade["entry_price"]
-        profit = proceeds - cost
-        balance = proceeds  # compound: new balance equals proceeds
-        tr = {
-            "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-            "symbol": current_trade["symbol"],
-            "side": current_trade["side"],
-            "entry": current_trade["entry_price"],
-            "exit": exit_price,
-            "profit": profit,
-            "balance_after": balance,
-            "reason": reason
-        }
-        trades.append(tr)
-        append_trade_csv(tr)
-        stats["trades"] += 1
-        if profit >= 0:
-            stats["wins"] += 1
+def macd_list(values, fast=12, slow=26, signal=9):
+    ema_fast = ema_list(values, fast)
+    ema_slow = ema_list(values, slow)
+    macd = [a-b for a,b in zip(ema_fast[-len(ema_slow):], ema_slow)] if ema_fast and ema_slow else []
+    # align lengths
+    # compute signal as ema of macd
+    if not macd:
+        return [], []
+    signal_line = ema_list(macd, signal)
+    # pad to same length as values (simple approach)
+    pad = len(values) - len(macd)
+    macd_full = [0.0]*pad + macd
+    sig_full = [0.0]*pad + signal_line
+    return macd_full, sig_full
+
+# ------- Backtest engine (compounding but safe sizing) -------
+def run_backtest(candles, initial_balance=INITIAL_BALANCE, risk_per_trade=RISK_PER_TRADE, stop_loss_pct=STOP_LOSS_PCT):
+    if not candles:
+        return {"error":"no candles"}, []
+    closes=[c["close"] for c in candles]
+    highs=[c["high"] for c in candles]
+    lows=[c["low"] for c in candles]
+    vols=[c["volume"] for c in candles]
+    times=[c["time"] for c in candles]
+
+    ema_fast = ema_list(closes, EMA_FAST)
+    ema_slow = ema_list(closes, EMA_SLOW)
+    rsi_vals = rsi_list(closes, RSI_PERIOD)
+    atr_vals = atr_list(highs,lows,closes,period=14)
+    macd_vals, macd_signal = macd_list(closes)
+
+    avg_vol20=[]
+    for i in range(len(vols)):
+        window = vols[max(0,i-20):i]
+        avg_vol20.append(sum(window)/len(window) if window else vols[i])
+
+    balance = float(initial_balance)
+    position = None
+    trades=[]
+    wins=losses=0
+
+    # safety clamps
+    POSITION_SIZE_PCT_loc = max(1e-6, min(POSITION_SIZE_PCT, MAX_POSITION_PCT))
+    for i in range(len(closes)):
+        # need enough data
+        if i < max(EMA_SLOW, RSI_PERIOD) + 2: continue
+        price = closes[i]; prev=i-1
+        # signal definitions
+        cross_up = (ema_fast[prev] <= ema_slow[prev]) and (ema_fast[i] > ema_slow[i])
+        cross_down = (ema_fast[prev] >= ema_slow[prev]) and (ema_fast[i] < ema_slow[i])
+        vol_ok = vols[i] > (avg_vol20[i] * VOLUME_MULTIPLIER)
+        rsi_ok = (rsi_vals[prev] > 25 and rsi_vals[prev] < 75)
+        macd_ok = False
+        try:
+            if macd_vals[i] and macd_signal[i]:
+                macd_ok = macd_vals[i] > macd_signal[i]
+        except Exception:
+            macd_ok = False
+
+        # ensemble scoring: require at least 2 filters true (cross_up, vol_ok, macd_ok, rsi_ok)
+        score = sum([1 if cross_up else 0, 1 if vol_ok else 0, 1 if macd_ok else 0, 1 if rsi_ok else 0])
+        enter_allowed = (score >= 2)
+
+        if position is None:
+            if enter_allowed:
+                # position sizing logic (SAFE)
+                max_pos_value = balance * MAX_POSITION_PCT
+                desired_pos_value = balance * POSITION_SIZE_PCT_loc
+                position_value = min(desired_pos_value, max_pos_value, balance)
+                # ensure we can respect risk_per_trade
+                estimated_risk = position_value * stop_loss_pct
+                max_risk_allowed = balance * risk_per_trade
+                if estimated_risk > max_risk_allowed and stop_loss_pct > 0:
+                    # scale down position to meet risk
+                    position_value = max_risk_allowed / stop_loss_pct
+                qty = position_value / price if price > 0 else 0.0
+                qty = max(qty, 0.0)
+                stop_price = price * (1 - stop_loss_pct)
+                # store
+                position = {"entry": price, "qty": qty, "stop": stop_price, "entry_time": times[i], "position_value": position_value}
         else:
-            stats["losses"] += 1
-        stats["profit_usd"] = round(balance - INITIAL_BALANCE, 8)
-        print(f"[EXIT] {tr['symbol']} exit {exit_price:.6f} profit={profit:.8f} newbal={balance:.8f} reason={reason}")
-        current_trade = None
-        return True
-
-# --- Decision logic per symbol ---
-def evaluate_symbol(symbol):
-    """
-    Fetch klines, compute EMA/RSI/volume filter and return signals:
-      - 'enter' -> price to enter (last closed price)
-      - 'exit'  -> price to exit (last closed price) with reason 'X' or 'SL'
-      - None
-    """
-    global current_trade
-    try:
-        df = fetch_klines(symbol)
-    except Exception as e:
-        print(f"fetch error {symbol}: {e}")
-        return None, None
-
-    # Use closed candle (index -2)
-    if len(df) < max(EMA_LONG, RSI_PERIOD) + 5:
-        return None, None
-
-    closes = df["close"].astype(float)
-    volumes = df["volume"].astype(float)
-
-    ema_short = compute_ema(closes, EMA_SHORT)
-    ema_long = compute_ema(closes, EMA_LONG)
-    rsi = compute_rsi(closes, RSI_PERIOD)
-
-    # last closed candle indices
-    last_idx = -2
-    prev_idx = -3
-
-    # compute cross
-    s_now = ema_short.iloc[last_idx]
-    s_prev = ema_short.iloc[prev_idx]
-    l_now = ema_long.iloc[last_idx]
-    l_prev = ema_long.iloc[prev_idx]
-
-    cross_up = (s_prev <= l_prev) and (s_now > l_now)
-    cross_down = (s_prev >= l_prev) and (s_now < l_now)
-
-    last_close = closes.iloc[last_idx]
-    prev_close = closes.iloc[prev_idx]
-
-    # volume filter: compare last closed candle volume with its 20-period avg
-    avg_vol = volumes.rolling(window=20, min_periods=1).mean().iloc[last_idx]
-    vol_ok = volumes.iloc[last_idx] > (avg_vol * VOLUME_MULTIPLIER)
-
-    # RSI check (avoid extreme)
-    rsi_now = rsi.iloc[last_idx]
-    rsi_ok = (rsi_now > 25) and (rsi_now < 75)
-
-    # Compose entry rule: cross_up + volume + rsi
-    if current_trade is None:
-        if cross_up and vol_ok and rsi_ok:
-            return "enter", float(last_close)
-        else:
-            return None, None
-    else:
-        # if there is an open trade on this symbol: check SL or cross_down to exit
-        if current_trade["symbol"] == symbol:
-            # stop loss
-            if last_close <= current_trade["stop_price"]:
-                return "exit_sl", float(last_close)
-            # exit on cross down
+            # check stop loss (low breached) OR cross_down exit
+            if lows[i] <= position["stop"]:
+                exit_price = position["stop"]
+                proceeds = position["qty"] * exit_price
+                cost = position.get("position_value", position["qty"] * position["entry"])
+                profit = proceeds - cost
+                balance = balance + profit
+                trades.append({"time": times[i], "entry": position["entry"], "exit": exit_price, "profit": profit, "balance_after": balance, "reason":"SL"})
+                if profit >= 0: wins += 1
+                else: losses += 1
+                position = None
+                continue
             if cross_down:
-                return "exit_x", float(last_close)
-    return None, None
+                exit_price = price
+                proceeds = position["qty"] * exit_price
+                cost = position.get("position_value", position["qty"] * position["entry"])
+                profit = proceeds - cost
+                balance = balance + profit
+                trades.append({"time": times[i], "entry": position["entry"], "exit": exit_price, "profit": profit, "balance_after": balance, "reason":"X"})
+                if profit >= 0: wins += 1
+                else: losses += 1
+                position = None
+                continue
 
-# --- Main worker loop ---
-def worker_loop():
-    global current_trade
-    print("Worker started. Symbols:", SYMBOLS)
+    stats={"initial_balance": initial_balance, "final_balance": round(balance,8), "profit_usd": round(balance-initial_balance,8),
+           "trades": len(trades), "wins": wins, "losses": losses, "win_rate": round((wins/(wins+losses)*100) if (wins+losses)>0 else 0,2)}
+    return stats, trades
+
+# ------- Flask routes (UI & API) -------
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+@app.route("/api/status")
+def api_status():
+    return jsonify({"balance": INITIAL_BALANCE, "symbols": SYMBOLS})
+
+@app.route("/api/candles")
+def api_candles():
+    symbol = request.args.get("symbol", SYMBOLS[0])
+    interval = request.args.get("interval", "1m")
+    limit = int(request.args.get("limit", 500))
+    try:
+        candles = fetch_klines_page(symbol, interval=interval, limit=limit)
+        return jsonify({"symbol": symbol, "candles": candles})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/backtest", methods=["POST"])
+def api_backtest():
+    data = request.get_json(silent=True) or request.form.to_dict() or {}
+    # CSV upload handling
+    if "csv" in request.files:
+        f = request.files["csv"]
+        text = f.read().decode("utf-8")
+        lines = [ln for ln in text.splitlines() if ln.strip()]
+        candles = []
+        for i, ln in enumerate(lines):
+            if i==0 and ("time" in ln.lower() and "open" in ln.lower()): continue
+            parts = ln.split(",")
+            if len(parts) < 6: continue
+            t = parts[0].strip()
+            try:
+                if t.isdigit() and len(t) > 10: t = int(t)
+                else: t = int(datetime.fromisoformat(t).timestamp()*1000)
+            except Exception:
+                t = int(datetime.utcnow().timestamp()*1000)
+            candles.append({"time": int(t), "open": float(parts[1]), "high": float(parts[2]), "low": float(parts[3]), "close": float(parts[4]), "volume": float(parts[5])})
+        initial = float(data.get("initial_balance", INITIAL_BALANCE))
+        risk = float(data.get("risk_per_trade", RISK_PER_TRADE))
+        stop = float(data.get("stop_loss_pct", STOP_LOSS_PCT))
+        stats, trades = run_backtest(candles, initial_balance=initial, risk_per_trade=risk, stop_loss_pct=stop)
+        return jsonify({"stats": stats, "trades": trades})
+
+    symbol = data.get("symbol", SYMBOLS[0])
+    months = int(data.get("months", 1))
+    interval = data.get("interval", "1m")
+    initial = float(data.get("initial_balance", INITIAL_BALANCE))
+    risk = float(data.get("risk_per_trade", RISK_PER_TRADE))
+    stop = float(data.get("stop_loss_pct", STOP_LOSS_PCT))
+
+    end = datetime.utcnow()
+    start = end - timedelta(days=30*months)
+    all_candles = []
+    start_ms = int(start.timestamp()*1000)
     while True:
         try:
-            for sym in SYMBOLS:
-                decision, price = evaluate_symbol(sym)
-                if decision == "enter":
-                    # enter only if no current trade
-                    with balance_lock:
-                        if current_trade is None:
-                            enter_trade(sym, price)
-                elif decision == "exit_sl":
-                    exit_trade(price, reason="SL")
-                elif decision == "exit_x":
-                    exit_trade(price, reason="X")
-                # if current trade is on another symbol we ignore other signals (sequential)
-            # sleep then poll again
+            part = fetch_klines_page(symbol, interval=interval, limit=1000, startTime=start_ms)
         except Exception as e:
-            print("Worker error:", e)
-        time.sleep(POLL_SECONDS)
+            return jsonify({"error": str(e)}), 500
+        if not part: break
+        all_candles.extend(part)
+        if len(part) < 1000: break
+        start_ms = part[-1]["time"] + 1
+        time.sleep(0.12)
 
-# --- Flask endpoints for status & recent trades ---
-@app.route("/status")
-def status():
-    with balance_lock:
-        bal = balance
-        ct = current_trade.copy() if current_trade else None
-        s = dict(stats)
-    recent = list(reversed(trades[-20:]))
-    return jsonify({
-        "balance": round(bal,8),
-        "current_trade": ct,
-        "stats": s,
-        "recent_trades": recent,
-        "config": {
-            "symbols": SYMBOLS,
-            "poll_seconds": POLL_SECONDS,
-            "ema_short": EMA_SHORT,
-            "ema_long": EMA_LONG,
-            "rsi_period": RSI_PERIOD,
-            "volume_multiplier": VOLUME_MULTIPLIER,
-            "stop_loss_pct": STOP_LOSS_PCT
-        }
-    })
+    if not all_candles:
+        return jsonify({"error":"no candles retrieved"}), 500
+
+    stats, trades = run_backtest(all_candles, initial_balance=initial, risk_per_trade=risk, stop_loss_pct=stop)
+    # optionally save trades CSV
+    try:
+        with open(TRADE_LOG, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["time","entry","exit","profit","balance_after","reason"])
+            for t in trades:
+                writer.writerow([datetime.utcfromtimestamp(t["time"]/1000).strftime("%Y-%m-%d %H:%M:%S"), t["entry"], t["exit"], t["profit"], t["balance_after"], t["reason"]])
+    except Exception:
+        pass
+    return jsonify({"stats": stats, "trades": trades})
 
 @app.route("/download_trades")
 def download_trades():
-    # return CSV file
-    try:
+    if os.path.exists(TRADE_LOG):
         return send_file(TRADE_LOG, as_attachment=True)
-    except Exception:
-        return jsonify({"error":"no trades yet"}), 404
-
-# --- Start background worker thread on app start ---
-def start_background():
-    t = threading.Thread(target=worker_loop, daemon=True)
-    t.start()
+    return jsonify({"error":"no trades file"}), 404
 
 if __name__ == "__main__":
-    # start worker when run directly
-    start_background()
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
-else:
-    # when imported by gunicorn, start worker
-    start_background()
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT","8000")))
