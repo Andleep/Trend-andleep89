@@ -3,6 +3,12 @@ from dataclasses import dataclass
 from typing import List
 
 @dataclass
+class ImprovedTradingConfig(TradingConfig):
+    """إعدادات تداول محسنة للرؤوس الصغيرة"""
+    min_trade_amount: float = 1.0  # حد أدنى 1$ للصفقات الصغيرة
+    max_consecutive_losses: int = 3  # الحد الأقصى للخسائر المتتالية
+    risk_adjustment: bool = True  # تعديل المخاطرة تلقائياً
+    smart_position_sizing: bool = True  # أحجام مراكز ذكية
 class AppConfig:
     """إعدادات التطبيق"""
     # إعدادات Render
