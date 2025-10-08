@@ -55,9 +55,6 @@ st.markdown("""
         border-radius: 10px;
         font-weight: bold;
     }
-    .sidebar .sidebar-content {
-        background: linear-gradient(180deg, #2c3e50 0%, #3498db 100%);
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -67,7 +64,7 @@ class TradingDashboard:
         self.results = None
         
     def setup_sidebar(self):
-        """إعداد الشريط الجانبي"""
+        """إعداد الشريط الجانبي مع مفاتيح فريدة"""
         st.sidebar.markdown("<h2 style='text-align: center; color: white;'>⚙️ إعدادات البوت</h2>", unsafe_allow_html=True)
         
         # إعدادات رأس المال
@@ -78,15 +75,17 @@ class TradingDashboard:
             max_value=100000.0,
             value=1000.0,
             step=100.0,
-            help="ابدأ برأس مال مناسب للمخاطرة"
+            help="ابدأ برأس مال مناسب للمخاطرة",
+            key="capital_input_unique"
         )
         
         # إدارة المخاطر
         st.sidebar.markdown("### 🛡️ إدارة المخاطر")
-        risk_level = st.sidebar.select_slider(
+        risk_level = st.sidebar.selectbox(
             "مستوى المخاطرة:",
-            options=["منخفض", "متوسط", "عالي", "عدواني"],
-            value="متوسط"
+            ["منخفض", "متوسط", "عالي", "عدواني"],
+            index=1,
+            key="risk_level_unique"
         )
         
         risk_mapping = {
@@ -102,15 +101,15 @@ class TradingDashboard:
         
         crypto_pairs = [
             "BTCUSDT", "ETHUSDT", "BNBUSDT", "ADAUSDT", "XRPUSDT",
-            "SOLUSDT", "DOTUSDT", "LINKUSDT", "LTCUSDT", "MATICUSDT",
-            "DOGEUSDT", "AVAXUSDT", "ATOMUSDT", "ETCUSDT", "BCHUSDT"
+            "SOLUSDT", "DOTUSDT", "LINKUSDT", "LTCUSDT", "MATICUSDT"
         ]
         
         selected_pairs = st.sidebar.multiselect(
             "اختر العملات:",
             crypto_pairs,
             default=["BTCUSDT", "ETHUSDT", "BNBUSDT"],
-            max_selections=8
+            max_selections=5,
+            key="pairs_select_unique"
         )
         
         # استراتيجية التداول
@@ -118,7 +117,8 @@ class TradingDashboard:
         strategy = st.sidebar.selectbox(
             "استراتيجية التداول:",
             ["مستمر", "محافظ", "عدواني"],
-            index=0
+            index=0,
+            key="strategy_select_unique"
         )
         
         # فترة المحاكاة
@@ -126,7 +126,8 @@ class TradingDashboard:
         simulation_period = st.sidebar.selectbox(
             "المدة:",
             ["1 يوم", "1 أسبوع", "1 شهر", "3 أشهر", "6 أشهر"],
-            index=2
+            index=2,
+            key="period_select_unique"
         )
         
         period_mapping = {
@@ -138,50 +139,56 @@ class TradingDashboard:
         }
         days = period_mapping[simulation_period]
         
-        # التداول المباشر
-        st.sidebar.markdown("### 🔄 التداول المباشر")
-        live_trading = st.sidebar.checkbox("تفعيل التداول المباشر", value=False)
-        
         return {
             'capital': capital,
             'risk_per_trade': risk_per_trade,
             'selected_pairs': selected_pairs,
             'strategy': strategy,
-            'days': days,
-            'live_trading': live_trading
+            'days': days
         }
     
-    def generate_sample_data(self, symbols, days=30):
-        """إنشاء بيانات نموذجية للمحاكاة"""
-        import random
-        from datetime import datetime, timedelta
-        
+    def generate_realistic_sample_data(self, symbols, days=30):
+        """إنشاء بيانات واقعية مع تقلبات حقيقية"""
         sample_data = {}
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=days)
         
         for symbol in symbols:
-            # إنشاء بيانات تاريخية عشوائية واقعية
-            dates = pd.date_range(start=start_date, end=end_date, freq='1H')
-            n_periods = len(dates)
+            # إنشاء تواريخ
+            dates = pd.date_range(end=datetime.now(), periods=days*24, freq='H')
             
-            # إنشاء أسعار واقعية
-            base_price = random.uniform(10, 50000)  # سعر أساسي عشوائي
+            # إنشاء أسعار واقعية مع اتجاهات وتقلبات
+            np.random.seed(hash(symbol) % 10000)  # بذور مختلفة لكل عملة
+            
+            # سعر ابتدائي واقعي
+            if "BTC" in symbol:
+                base_price = 45000
+            elif "ETH" in symbol:
+                base_price = 3000
+            else:
+                base_price = np.random.uniform(10, 500)
+            
             prices = [base_price]
+            volumes = [np.random.uniform(1000, 50000)]
             
-            for i in range(1, n_periods):
-                # تغيير سعري واقعي (±2%)
-                change = random.uniform(-0.02, 0.02)
+            for i in range(1, len(dates)):
+                # تقلبات واقعية مع اتجاهات
+                trend = np.random.choice([-0.001, 0, 0.001], p=[0.3, 0.4, 0.3])
+                volatility = np.random.uniform(-0.02, 0.02)
+                change = trend + volatility
+                
                 new_price = prices[-1] * (1 + change)
                 prices.append(new_price)
+                
+                # حجم متغير
+                new_volume = volumes[-1] * np.random.uniform(0.8, 1.2)
+                volumes.append(new_volume)
             
             df = pd.DataFrame({
                 'timestamp': dates,
-                'open': [p * random.uniform(0.998, 1.002) for p in prices],
-                'high': [p * random.uniform(1.001, 1.005) for p in prices],
-                'low': [p * random.uniform(0.995, 0.999) for p in prices],
+                'open': [p * np.random.uniform(0.999, 1.001) for p in prices],
+                'high': [p * np.random.uniform(1.001, 1.005) for p in prices],
+                'low': [p * np.random.uniform(0.995, 0.999) for p in prices],
                 'close': prices,
-                'volume': [random.uniform(1000, 100000) for _ in prices]
+                'volume': volumes
             })
             
             df.set_index('timestamp', inplace=True)
@@ -190,7 +197,7 @@ class TradingDashboard:
         return sample_data
     
     def run_simulation(self, settings):
-        """تشغيل المحاكاة"""
+        """تشغيل المحاكاة مع بيانات واقعية"""
         if not settings['selected_pairs']:
             st.error("⚠️ الرجاء اختيار عملات للتداول أولاً")
             return None
@@ -203,7 +210,8 @@ class TradingDashboard:
         config = TradingConfig(
             initial_capital=settings['capital'],
             risk_per_trade=settings['risk_per_trade'],
-            selected_pairs=settings['selected_pairs']
+            selected_pairs=settings['selected_pairs'],
+            min_trade_amount=1.0
         )
         
         # إنشاء البوت
@@ -220,13 +228,17 @@ class TradingDashboard:
                 status_text.text("🤖 البوت يتخذ القرارات...")
             else:
                 status_text.text("💰 حساب الأرباح التراكمية...")
-            time.sleep(0.02)
+            time.sleep(0.01)
         
-        # إنشاء بيانات نموذجية
-        market_data = self.generate_sample_data(settings['selected_pairs'], settings['days'])
+        # إنشاء بيانات واقعية
+        market_data = self.generate_realistic_sample_data(settings['selected_pairs'], settings['days'])
         
         # تشغيل المحاكاة
-        self.results = self.bot.run_backtest(market_data, settings['selected_pairs'])
+        try:
+            self.results = self.bot.run_backtest(market_data, settings['selected_pairs'])
+        except Exception as e:
+            st.error(f"❌ خطأ في المحاكاة: {str(e)}")
+            return None
         
         progress_bar.empty()
         status_text.empty()
@@ -243,7 +255,6 @@ class TradingDashboard:
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            profit_color = "profit-positive" if metrics['total_profit'] > 0 else "profit-negative"
             st.markdown(f"""
             <div class='metric-card'>
                 <h3>💰 الرصيد النهائي</h3>
@@ -252,6 +263,7 @@ class TradingDashboard:
             """, unsafe_allow_html=True)
         
         with col2:
+            profit_color = "profit-positive" if metrics['total_profit'] > 0 else "profit-negative"
             st.markdown(f"""
             <div class='metric-card'>
                 <h3>🎯 إجمالي الربح</h3>
@@ -270,10 +282,11 @@ class TradingDashboard:
             """, unsafe_allow_html=True)
         
         with col4:
+            growth_color = "profit-positive" if metrics['compounded_growth'] > 0 else "profit-negative"
             st.markdown(f"""
             <div class='metric-card'>
                 <h3>🔄 النمو التراكمي</h3>
-                <h2 class='profit-positive'>{metrics['compounded_growth']:.2f}%</h2>
+                <h2 class='{growth_color}'>{metrics['compounded_growth']:.2f}%</h2>
                 <p>ربح فوري بعد كل صفقة</p>
             </div>
             """, unsafe_allow_html=True)
@@ -282,7 +295,7 @@ class TradingDashboard:
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.metric("📊 متوسط الربح/صفقة", f"${metrics.get('avg_profit', 0):.2f}")
+            st.metric("📊 متوسط الربح/صفقة", f"${metrics.get('avg_profit', 0):.4f}")
         with col2:
             st.metric("⚖️ عامل الربح", f"{metrics.get('profit_factor', 0):.2f}")
         with col3:
@@ -293,7 +306,8 @@ class TradingDashboard:
     def plot_equity_curve(self, results):
         """رسم منحنى رأس المال"""
         equity_curve = results.get('equity_curve', [])
-        if not equity_curve:
+        if len(equity_curve) <= 1:
+            st.info("📊 لا توجد بيانات كافية لعرض منحنى رأس المال")
             return
         
         fig = go.Figure()
@@ -301,9 +315,10 @@ class TradingDashboard:
         fig.add_trace(go.Scatter(
             x=list(range(len(equity_curve))),
             y=equity_curve,
-            mode='lines',
+            mode='lines+markers',
             name='رأس المال التراكمي',
             line=dict(color='#00FF88', width=4),
+            marker=dict(size=4),
             fill='tozeroy',
             fillcolor='rgba(0, 255, 136, 0.1)'
         ))
@@ -330,62 +345,62 @@ class TradingDashboard:
         
         trades_df = pd.DataFrame(results['trade_history'])
         if trades_df.empty:
-            st.info("لا توجد صفقات لتحليلها")
+            st.info("📭 لا توجد صفقات لتحليلها في هذه المحاكاة")
+            return
+        
+        closed_trades = trades_df[trades_df['status'] == 'CLOSED']
+        
+        if closed_trades.empty:
+            st.info("📭 لا توجد صفقات مغلقة لتحليلها")
             return
         
         # إحصائيات الصفقات
         col1, col2, col3 = st.columns(3)
         
-        closed_trades = trades_df[trades_df['status'] == 'CLOSED']
-        
         with col1:
-            if not closed_trades.empty:
-                avg_profit = closed_trades['profit'].mean()
-                st.metric("💵 متوسط الربح/صفقة", f"${avg_profit:.2f}")
+            avg_profit = closed_trades['profit'].mean()
+            st.metric("💵 متوسط الربح/صفقة", f"${avg_profit:.4f}")
         
         with col2:
-            if not closed_trades.empty:
-                best_trade = closed_trades['profit'].max()
-                st.metric("🚀 أفضل صفقة", f"${best_trade:.2f}")
+            best_trade = closed_trades['profit'].max()
+            st.metric("🚀 أفضل صفقة", f"${best_trade:.4f}")
         
         with col3:
-            if not closed_trades.empty:
-                worst_trade = closed_trades['profit'].min()
-                st.metric("📉 أسوأ صفقة", f"${worst_trade:.2f}")
+            worst_trade = closed_trades['profit'].min()
+            st.metric("📉 أسوأ صفقة", f"${worst_trade:.4f}")
         
         # توزيع الأرباح
-        if not closed_trades.empty:
-            fig = go.Figure()
-            
-            fig.add_trace(go.Histogram(
-                x=closed_trades['profit'],
-                nbinsx=30,
-                name='توزيع الأرباح',
-                marker_color='#636EFA',
-                opacity=0.7
-            ))
-            
-            fig.update_layout(
-                title="توزيع أرباح الصفقات",
-                xaxis_title="الربح ($)",
-                yaxis_title="عدد الصفقات",
-                height=300,
-                template="plotly_dark"
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
+        fig = go.Figure()
+        
+        fig.add_trace(go.Histogram(
+            x=closed_trades['profit'],
+            nbinsx=20,
+            name='توزيع الأرباح',
+            marker_color='#636EFA',
+            opacity=0.7
+        ))
+        
+        fig.update_layout(
+            title="توزيع أرباح الصفقات",
+            xaxis_title="الربح ($)",
+            yaxis_title="عدد الصفقات",
+            height=300,
+            template="plotly_dark"
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
         
         # عرض الصفقات
         st.markdown("### 💼 سجل الصفقات")
         
-        display_columns = ['symbol', 'timestamp', 'action', 'price', 'amount', 'profit', 'status']
-        available_columns = [col for col in display_columns if col in trades_df.columns]
+        display_columns = ['symbol', 'timestamp', 'action', 'price', 'amount', 'profit', 'close_reason']
+        available_columns = [col for col in display_columns if col in closed_trades.columns]
         
-        display_df = trades_df[available_columns].copy()
+        display_df = closed_trades[available_columns].copy()
         
         if 'profit' in display_df.columns:
             display_df['profit'] = display_df['profit'].apply(
-                lambda x: f"${x:.2f}" if pd.notnull(x) else "-"
+                lambda x: f"${x:.4f}" if pd.notnull(x) else "-"
             )
         
         if 'amount' in display_df.columns:
@@ -393,7 +408,10 @@ class TradingDashboard:
                 lambda x: f"${x:.2f}" if pd.notnull(x) else "-"
             )
         
-        st.dataframe(display_df, use_container_width=True)
+        st.dataframe(display_df.head(20), use_container_width=True)
+        
+        if len(display_df) > 20:
+            st.info(f"📋 عرض 20 من أصل {len(display_df)} صفقة")
     
     def display_strategy_insights(self, results):
         """عرض insights عن الاستراتيجية"""
@@ -402,12 +420,7 @@ class TradingDashboard:
         metrics = results['performance_metrics']
         
         # تقييم الأداء
-        performance_score = min(100, max(0, (
-            metrics['win_rate'] * 0.3 +
-            (metrics['total_return'] * 2) * 0.3 +
-            (100 - metrics.get('max_drawdown', 0)) * 0.2 +
-            min(metrics.get('profit_factor', 0) * 20, 20)
-        )))
+        performance_score = metrics.get('performance_score', 0)
         
         col1, col2 = st.columns(2)
         
@@ -434,24 +447,37 @@ class TradingDashboard:
                 tips.append("🔻 خفض مستوى المخاطرة لزيادة دقة الصفقات")
             if metrics.get('max_drawdown', 0) > 15:
                 tips.append("🛡️ زيادة وقف الخسارة لتقليل الخسائر")
-            if metrics['total_trades'] < 10:
-                tips.append("⚡ زيادة عدد أزواج التداول لفرص أكثر")
+            if metrics['total_trades'] < 5:
+                tips.append("⚡ اختر المزيد من أزواج التداول لفرص أكثر")
+            if metrics['total_trades'] > 50:
+                tips.append("🎯 رفع عتبات الدخول لتحسين جودة الصفقات")
             if not tips:
                 tips.append("✅ الإعدادات ممتازة! حافظ على نفس الاستراتيجية")
             
             for tip in tips:
                 st.write(tip)
     
-    def run_live_demo(self, settings):
+    def run_live_demo(self):
         """تشغيل العرض التجريبي المباشر"""
         st.markdown("### 🔄 التداول المباشر التجريبي")
         
         # محاكاة التداول المباشر
         live_placeholder = st.empty()
         
-        for i in range(5):
+        demo_results = {
+            'initial_balance': 1000,
+            'final_balance': 1245.50,
+            'total_profit': 245.50,
+            'total_return': 24.55,
+            'total_trades': 15,
+            'winning_trades': 11,
+            'win_rate': 73.3,
+            'compounded_growth': 24.55
+        }
+        
+        for i in range(3):
             with live_placeholder.container():
-                st.info(f"🔄 جولة التداول {i+1}/5 - تحليل السوق الحالي...")
+                st.info(f"🔄 جولة التداول {i+1}/3 - تحليل السوق الحالي...")
                 
                 # محاكاة قرارات التداول
                 col1, col2, col3 = st.columns(3)
@@ -471,12 +497,22 @@ class TradingDashboard:
                 
             time.sleep(2)
         
-        st.success("🎊 انتهت جولة التداول المباشر! راجع النتائج الكاملة في تقرير المحاكاة.")
+        st.success("🎊 انتهت جولة التداول المباشر!")
+        
+        # عرض نتائج تجريبية
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("رأس المال النهائي", f"${demo_results['final_balance']:.2f}")
+        col2.metric("إجمالي الربح", f"${demo_results['total_profit']:.2f}")
+        col3.metric("معدل النجاح", f"{demo_results['win_rate']:.1f}%")
+        col4.metric("النمو التراكمي", f"{demo_results['compounded_growth']:.2f}%")
     
     def main(self):
         """الدالة الرئيسية"""
         st.markdown("<h1 class='main-header'>🚀 البوت التداولي الذكي - ALGOX</h1>", unsafe_allow_html=True)
         st.markdown("### 🤖 نظام ربح تراكمي فوري - بداية من $10 إلى ما لا نهاية")
+        
+        # تحميل الإعدادات مرة واحدة فقط
+        settings = self.setup_sidebar()
         
         # علامات التبويب
         tab1, tab2, tab3 = st.tabs(["🎯 المحاكاة الشاملة", "📊 التحليل الفني", "🚀 التداول المباشر"])
@@ -484,26 +520,21 @@ class TradingDashboard:
         with tab1:
             st.markdown("### ⚡ محاكاة أداء البوت")
             
-            # إعدادات المستخدم
-            settings = self.setup_sidebar()
-            
             # زر التشغيل الرئيسي
-            col1, col2, col3 = st.columns([1, 2, 1])
-            with col2:
-                if st.button("🚀 بدء المحاكاة الشاملة", use_container_width=True):
-                    with st.spinner("جاري تشغيل المحاكاة المتقدمة..."):
-                        results = self.run_simulation(settings)
-                        
-                        if results:
-                            # عرض النتائج
-                            self.display_performance_metrics(results)
-                            self.plot_equity_curve(results)
-                            self.display_trade_analysis(results)
-                            self.display_strategy_insights(results)
+            if st.button("🚀 بدء المحاكاة الشاملة", use_container_width=True, type="primary"):
+                with st.spinner("جاري تشغيل المحاكاة المتقدمة..."):
+                    results = self.run_simulation(settings)
+                    
+                    if results:
+                        # عرض النتائج
+                        self.display_performance_metrics(results)
+                        self.plot_equity_curve(results)
+                        self.display_trade_analysis(results)
+                        self.display_strategy_insights(results)
             
             # معلومات سريعة
             st.markdown("---")
-            st.markdown("### 💎 لمحة سريعة عن النظام")
+            st.markdown("### 💎 مميزات النظام")
             
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -531,31 +562,48 @@ class TradingDashboard:
         with tab2:
             st.markdown("### 📊 التحليل الفني المتقدم")
             
-            # محاكاة التحليل الفني
-            st.info("🔄 جاري تحليل أنماط السوق والفرص المتاحة...")
+            # مؤشرات فنية تفاعلية
+            st.info("📈 تحليل أنماط السوق والفرص المتاحة...")
             
-            # مؤشرات فنية
+            # إنشاء بيانات نموذجية للعرض
+            dates = pd.date_range(end=datetime.now(), periods=100, freq='H')
+            prices = [100]
+            for i in range(1, 100):
+                change = np.random.normal(0, 0.01)
+                prices.append(prices[-1] * (1 + change))
+            
             fig = make_subplots(
                 rows=2, cols=2,
-                subplot_titles=('الاتجاه العام', 'القوة النسبية', 'الحجم', 'التقلب')
+                subplot_titles=('الاتجاه العام', 'القوة النسبية RSI', 'الحجم', 'المتوسطات المتحركة'),
+                vertical_spacing=0.1
             )
             
-            # إضافة بيانات نموذجية
-            x = list(range(50))
-            fig.add_trace(go.Scatter(x=x, y=np.cumsum(np.random.randn(50)), name='الاتجاه'), row=1, col=1)
-            fig.add_trace(go.Scatter(x=x, y=50 + np.random.randn(50), name='RSI'), row=1, col=2)
-            fig.add_trace(go.Bar(x=x, y=np.random.exponential(100, 50), name='الحجم'), row=2, col=1)
-            fig.add_trace(go.Scatter(x=x, y=np.random.randn(50).cumsum(), name='التقلب'), row=2, col=2)
+            # الرسم البياني للسعر
+            fig.add_trace(go.Scatter(x=dates, y=prices, name='السعر', line=dict(color='#00FF88')), row=1, col=1)
             
-            fig.update_layout(height=600, template="plotly_dark")
+            # RSI
+            rsi = [50 + 20 * np.sin(i/10) for i in range(100)]
+            fig.add_trace(go.Scatter(x=dates, y=rsi, name='RSI', line=dict(color='#FF6B6B')), row=1, col=2)
+            fig.add_hline(y=70, line_dash="dash", line_color="red", row=1, col=2)
+            fig.add_hline(y=30, line_dash="dash", line_color="green", row=1, col=2)
+            
+            # الحجم
+            volume = [np.random.uniform(1000, 5000) for _ in range(100)]
+            fig.add_trace(go.Bar(x=dates, y=volume, name='الحجم', marker_color='#4ECDC4'), row=2, col=1)
+            
+            # المتوسطات
+            fig.add_trace(go.Scatter(x=dates, y=prices, name='السعر', line=dict(color='#00FF88')), row=2, col=2)
+            ma_20 = pd.Series(prices).rolling(20).mean()
+            fig.add_trace(go.Scatter(x=dates, y=ma_20, name='EMA 20', line=dict(color='#FFE66D')), row=2, col=2)
+            
+            fig.update_layout(height=600, template="plotly_dark", showlegend=True)
             st.plotly_chart(fig, use_container_width=True)
         
         with tab3:
             st.markdown("### 🔄 نظام التداول المباشر")
             
-            if st.button("🎯 بدء التداول المباشر التجريبي", type="primary"):
-                settings = self.setup_sidebar()
-                self.run_live_demo(settings)
+            if st.button("🎯 بدء التداول المباشر التجريبي", use_container_width=True, type="secondary"):
+                self.run_live_demo()
 
 # تشغيل التطبيق
 if __name__ == "__main__":
