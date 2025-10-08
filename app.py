@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import time
 import requests
 import json
-from trading_bot import AdvancedTradingBot, TradingConfig
+from trading_bot import ImprovedTradingBot as AdvancedTradingBot, TradingConfig
 import warnings
 warnings.filterwarnings('ignore')
 
